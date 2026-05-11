@@ -20,7 +20,9 @@ from __future__ import annotations
 import logging
 import re
 from collections import defaultdict
-from typing import Any
+from typing import Any, cast
+
+from claude_agent_sdk.types import HookCallback, HookContext, HookInput, HookJSONOutput
 
 from ..core.models import EscalationReason
 from ..core.policy import AgentPolicy, DEFAULT_POLICY
@@ -86,11 +88,19 @@ def redact_pii(text: str) -> tuple[str, list[str]]:
 # Each factory closes over `state` + `policy` so we can inject test doubles.  #
 # --------------------------------------------------------------------------- #
 
-def build_pre_tool_use_hook(state: HookState, policy: AgentPolicy = DEFAULT_POLICY):
+def build_pre_tool_use_hook(
+    state: HookState,
+    policy: AgentPolicy = DEFAULT_POLICY,
+) -> HookCallback:
     """PreToolUse: gate every tool call against policy before it runs."""
 
-    async def pre_tool_use(input_data, tool_use_id, context):
-        tool_name = input_data["tool_name"]
+    async def pre_tool_use(
+        input_data: HookInput,
+        tool_use_id: str | None,
+        context: HookContext,
+    ) -> HookJSONOutput:
+        tool_name = input_data.get("tool_name", "")
+        assert tool_name is not "", "tool_name is required in PreToolUse input"
         tool_input = input_data.get("tool_input", {}) or {}
 
         # 1. Refund ceiling enforcement -------------------------------------
@@ -146,11 +156,11 @@ def build_pre_tool_use_hook(state: HookState, policy: AgentPolicy = DEFAULT_POLI
                     log.info("Redacted PII in %s.%s: %s", tool_name, key, labels)
                     tool_input[key] = redacted
                     return {
-                        "hookSpecificOutput": {
+                        "hookSpecificOutput": { 
                             "hookEventName": "PreToolUse",
                             "permissionDecision": "allow",
-                            "modifiedInput": tool_input,
-                        }
+                            "updatedInput": tool_input,
+                        },
                     }
 
         # 4. Audit log entry (request side) ---------------------------------
@@ -164,11 +174,11 @@ def build_pre_tool_use_hook(state: HookState, policy: AgentPolicy = DEFAULT_POLI
     return pre_tool_use
 
 
-def build_post_tool_use_hook(state: HookState, policy: AgentPolicy = DEFAULT_POLICY):
+def build_post_tool_use_hook(state: HookState, policy: AgentPolicy = DEFAULT_POLICY) -> HookCallback:
     """PostToolUse: log results, cache verified-customer state, reset failure
     counters on success."""
 
-    async def post_tool_use(input_data, tool_use_id, context):
+    async def post_tool_use(input_data, tool_use_id, context) -> HookJSONOutput:
         tool_name = input_data["tool_name"]
         result = input_data.get("tool_response") or input_data.get("tool_result", {})
 
@@ -199,11 +209,11 @@ def build_post_tool_use_hook(state: HookState, policy: AgentPolicy = DEFAULT_POL
     return post_tool_use
 
 
-def build_post_tool_failure_hook(state: HookState, policy: AgentPolicy = DEFAULT_POLICY):
+def build_post_tool_failure_hook(state: HookState, policy: AgentPolicy = DEFAULT_POLICY) -> HookCallback:
     """PostToolUseFailure: when a tool raises, count the failure and decide
     whether we've hit the repeated-failure escalation threshold."""
 
-    async def post_tool_failure(input_data, tool_use_id, context):
+    async def post_tool_failure(input_data, tool_use_id, context) -> HookJSONOutput:
         tool_name = input_data["tool_name"]
         state.failure_counts[tool_name] += 1
         count = state.failure_counts[tool_name]
@@ -231,12 +241,12 @@ def build_post_tool_failure_hook(state: HookState, policy: AgentPolicy = DEFAULT
     return post_tool_failure
 
 
-def build_user_prompt_hook(state: HookState, policy: AgentPolicy = DEFAULT_POLICY):
+def build_user_prompt_hook(state: HookState, policy: AgentPolicy = DEFAULT_POLICY) -> HookCallback:
     """UserPromptSubmit: scan the user's message for explicit human-handoff
     requests and sensitive topics. Sets `escalation_pending` so the agent's
     system prompt directives lead it to call escalate_to_human first."""
 
-    async def user_prompt(input_data, tool_use_id, context):
+    async def user_prompt(input_data, tool_use_id, context) -> HookJSONOutput:
         prompt = (input_data.get("prompt") or "").lower()
 
         # Explicit handoff request

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 from uuid import uuid4
 
 from claude_agent_sdk import (
@@ -151,25 +151,25 @@ class CustomerSupportAgent:
                     HookMatcher(
                         # Match all tools — we want every call gated.
                         matcher=None,
-                        hooks=[cast(Any, build_pre_tool_use_hook(state, self.policy))],
+                        hooks=[build_pre_tool_use_hook(state, self.policy)],
                     ),
                 ],
                 "PostToolUse": [
                     HookMatcher(
                         matcher=None,
-                        hooks=[cast(Any, build_post_tool_use_hook(state, self.policy))],
+                        hooks=[build_post_tool_use_hook(state, self.policy)],
                     ),
                 ],
                 "PostToolUseFailure": [
                     HookMatcher(
                         matcher=None,
-                        hooks=[cast(Any, build_post_tool_failure_hook(state, self.policy))],
+                        hooks=[build_post_tool_failure_hook(state, self.policy)],
                     ),
                 ],
                 "UserPromptSubmit": [
                     HookMatcher(
                         matcher=None,
-                        hooks=[cast(Any, build_user_prompt_hook(state, self.policy))],
+                        hooks=[build_user_prompt_hook(state, self.policy)],
                     ),
                 ],
             },
@@ -230,8 +230,11 @@ class CustomerSupportAgent:
         escalation_reason = None
         escalation_summary = None
         if escalated:
-            escalation_reason = state.escalation_pending["reason"]
-            escalation_summary = state.escalation_pending["summary"]
+            assert state.escalation_pending is not None  # for mypy
+            assert isinstance(state.escalation_pending, dict)
+            
+            escalation_reason = state.escalation_pending["reason"] # pylint: disable=unsubscriptable-object
+            escalation_summary = state.escalation_pending["summary"] # pylint: disable=unsubscriptable-object
             ticket.status = TicketStatus.ESCALATED
             try:
                 ticket.escalation_reason = EscalationReason(escalation_reason)
