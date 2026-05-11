@@ -18,13 +18,13 @@ from typing import Any
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
-from ..core.models import (
+from core.models import (
     EscalationReason,
     RefundLimitExceededError,
     SupportAgentError,
 )
-from ..core.policy import DEFAULT_POLICY
-from ..core.services import ServiceRegistry
+from core.policy import DEFAULT_POLICY
+from core.services import ServiceRegistry
 
 
 # --------------------------------------------------------------------------- #

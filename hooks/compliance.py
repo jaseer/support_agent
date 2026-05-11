@@ -24,9 +24,9 @@ from typing import Any, cast
 
 from claude_agent_sdk.types import HookCallback, HookContext, HookInput, HookJSONOutput
 
-from ..core.models import EscalationReason
-from ..core.policy import AgentPolicy, DEFAULT_POLICY
-from ..tools.mcp_tools import (
+from core.models import EscalationReason
+from core.policy import AgentPolicy, DEFAULT_POLICY
+from tools.mcp_tools import (
     TOOL_ESCALATE,
     TOOL_ISSUE_REFUND,
     TOOL_LOOKUP_CUSTOMER,
