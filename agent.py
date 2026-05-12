@@ -21,17 +21,17 @@ from claude_agent_sdk import (
     TextBlock,
 )
 
-from .core.models import EscalationReason, Ticket, TicketStatus
-from .core.policy import AgentPolicy, DEFAULT_POLICY
-from .core.services import ServiceRegistry
-from .hooks.compliance import (
+from core.models import EscalationReason, Ticket, TicketStatus
+from core.policy import AgentPolicy, DEFAULT_POLICY
+from core.services import ServiceRegistry
+from hooks.compliance import (
     HookState,
     build_post_tool_failure_hook,
     build_post_tool_use_hook,
     build_pre_tool_use_hook,
     build_user_prompt_hook,
 )
-from .tools.mcp_tools import ALL_TOOLS, build_support_mcp_server
+from tools.mcp_tools import ALL_TOOLS, build_support_mcp_server
 
 log = logging.getLogger("support_agent")
 

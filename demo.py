@@ -17,8 +17,8 @@ import asyncio
 import os
 import sys
 
-from . import CustomerSupportAgent, ServiceRegistry
-
+from core.services import ServiceRegistry
+from agent import CustomerSupportAgent
 
 SCENARIOS = [
     {
