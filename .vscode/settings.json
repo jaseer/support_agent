@@ -5,11 +5,10 @@
   "python.testing.unittestArgs": [
     "-v",
     "-s",
-    ".",
+    "./tests",
     "-p",
-    "test_*.py"
+    "test*.py"
   ],
-  "python.testing.autoTestDiscoverOnSavePattern": "test*.py",
   "python.analysis.enablePytestSupport": true,
   "python.testing.pytestPath": ""
 }
