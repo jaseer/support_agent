@@ -14,7 +14,9 @@ Each tool follows the same pattern:
 """
 from __future__ import annotations
 
-from typing import Any
+import json
+from functools import wraps
+from typing import Any, Awaitable, Callable
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
@@ -28,35 +30,56 @@ from core.services import ServiceRegistry
 
 
 # --------------------------------------------------------------------------- #
+# Constants                                                                   #
+# --------------------------------------------------------------------------- #
+
+KNOWLEDGE_BASE = {
+    "shipping": "Standard shipping is 3–5 business days. Express is 1–2.",
+    "returns": "Items can be returned within 30 days of delivery for a "
+               "full refund. Items must be unused and in original packaging.",
+    "warranty": "All products carry a 1-year manufacturer warranty. "
+                "Extended coverage available at checkout.",
+    "account": "Account changes (email, password) must be made at "
+               "account.example.com — agents cannot make them on your behalf.",
+}
+
+
+# --------------------------------------------------------------------------- #
 # Helpers                                                                     #
 # --------------------------------------------------------------------------- #
 
 def _ok(payload: dict[str, Any]) -> dict[str, Any]:
     """Wrap a successful tool result in MCP's expected content shape."""
-    import json
     return {"content": [{"type": "text", "text": json.dumps(payload, default=str)}]}
 
 
 def _err(error: SupportAgentError) -> dict[str, Any]:
     """Wrap a typed error so Claude sees it as a tool result, not a crash."""
-    import json
     return {
         "content": [{"type": "text", "text": json.dumps(error.to_tool_error())}],
         "isError": True,
     }
 
 
+def _tool_error_handler(
+    func: Callable[..., Awaitable[dict[str, Any]]]
+) -> Callable[..., Awaitable[dict[str, Any]]]:
+    """Decorator to catch SupportAgentError and return structured tool errors."""
+    @wraps(func)
+    async def wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        try:
+            return await func(*args, **kwargs)
+        except SupportAgentError as e:
+            return _err(e)
+    return wrapper
+
+
 # --------------------------------------------------------------------------- #
-# Tool factory                                                                #
+# Tool builders                                                               #
 # --------------------------------------------------------------------------- #
 
-def build_support_mcp_server(services: ServiceRegistry, policy=DEFAULT_POLICY):
-    """Construct the in-process MCP server with all support tools bound to
-    the given service registry. Returning a fresh server per agent run keeps
-    tests isolated — pass a registry built from fakes.
-    """
-
-    # --- Customer lookup -------------------------------------------------- #
+def _build_lookup_customer_tool(services: ServiceRegistry):
+    """Customer lookup tool builder."""
     @tool(
         "lookup_customer",
         "Look up a customer by their customer_id (e.g. 'C-1001') OR by email. "
@@ -64,70 +87,74 @@ def build_support_mcp_server(services: ServiceRegistry, policy=DEFAULT_POLICY):
         "FIRST in any conversation to verify identity before taking actions.",
         {"customer_id": str, "email": str},
     )
+    @_tool_error_handler
     async def lookup_customer(args: dict[str, Any]) -> dict[str, Any]:
-        try:
-            cid = (args.get("customer_id") or "").strip()
-            email = (args.get("email") or "").strip()
-            if cid:
-                customer = await services.crm.get_customer(cid)
-            elif email:
-                customer = await services.crm.find_by_email(email)
-            else:
-                raise SupportAgentError("Provide either customer_id or email")
-            return _ok({
-                "customer_id": customer.customer_id,
-                "name": customer.name,
-                "email": customer.email,
-                "tier": customer.tier,
-                "lifetime_value_usd": customer.lifetime_value_usd,
-            })
-        except SupportAgentError as e:
-            return _err(e)
+        cid = (args.get("customer_id") or "").strip()
+        email = (args.get("email") or "").strip()
+        if cid:
+            customer = await services.crm.get_customer(cid)
+        elif email:
+            customer = await services.crm.find_by_email(email)
+        else:
+            raise SupportAgentError("Provide either customer_id or email")
+        return _ok({
+            "customer_id": customer.customer_id,
+            "name": customer.name,
+            "email": customer.email,
+            "tier": customer.tier,
+            "lifetime_value_usd": customer.lifetime_value_usd,
+        })
+    return lookup_customer
 
-    # --- Order lookup ----------------------------------------------------- #
+
+def _build_get_order_tool(services: ServiceRegistry):
+    """Single order lookup tool builder."""
     @tool(
         "get_order",
         "Fetch details for a single order by order_id (e.g. 'O-5001'). "
         "Returns total, status, and creation date.",
         {"order_id": str},
     )
+    @_tool_error_handler
     async def get_order(args: dict[str, Any]) -> dict[str, Any]:
-        try:
-            order = await services.orders.get_order(args["order_id"])
-            return _ok({
-                "order_id": order.order_id,
-                "customer_id": order.customer_id,
-                "total_usd": order.total_usd,
-                "status": order.status,
-                "created_at": order.created_at.isoformat(),
-            })
-        except SupportAgentError as e:
-            return _err(e)
+        order = await services.orders.get_order(args["order_id"])
+        return _ok({
+            "order_id": order.order_id,
+            "customer_id": order.customer_id,
+            "total_usd": order.total_usd,
+            "status": order.status,
+            "created_at": order.created_at.isoformat(),
+        })
+    return get_order
 
+
+def _build_list_customer_orders_tool(services: ServiceRegistry):
+    """List orders for a customer tool builder."""
     @tool(
         "list_customer_orders",
         "List all orders for a customer. Use after lookup_customer when the "
         "user references 'my recent order' without giving an order_id.",
         {"customer_id": str},
     )
+    @_tool_error_handler
     async def list_customer_orders(args: dict[str, Any]) -> dict[str, Any]:
-        try:
-            orders = await services.orders.list_for_customer(args["customer_id"])
-            return _ok({
-                "orders": [
-                    {
-                        "order_id": o.order_id,
-                        "total_usd": o.total_usd,
-                        "status": o.status,
-                        "created_at": o.created_at.isoformat(),
-                    }
-                    for o in orders
-                ]
-            })
-        except SupportAgentError as e:
-            return _err(e)
+        orders = await services.orders.list_for_customer(args["customer_id"])
+        return _ok({
+            "orders": [
+                {
+                    "order_id": o.order_id,
+                    "total_usd": o.total_usd,
+                    "status": o.status,
+                    "created_at": o.created_at.isoformat(),
+                }
+                for o in orders
+            ]
+        })
+    return list_customer_orders
 
-    # --- Refunds ---------------------------------------------------------- #
+
+def _build_issue_refund_tool(services: ServiceRegistry, policy):
+    """Issue refund tool builder."""
     @tool(
         "issue_refund",
         "Issue a refund for an order. The customer's tier determines the "
@@ -141,50 +168,51 @@ def build_support_mcp_server(services: ServiceRegistry, policy=DEFAULT_POLICY):
             "reason": str,
         },
     )
+    @_tool_error_handler
     async def issue_refund(args: dict[str, Any]) -> dict[str, Any]:
-        try:
-            customer = await services.crm.get_customer(args["customer_id"])
-            amount = float(args["amount_usd"])
-            ceiling = policy.refund.ceiling_for(customer.tier)
+        customer = await services.crm.get_customer(args["customer_id"])
+        amount = float(args["amount_usd"])
+        ceiling = policy.refund.ceiling_for(customer.tier)
 
-            # Belt-and-suspenders: the PreToolUse hook also checks this, but
-            # tools never trust upstream — defense in depth.
-            if amount > ceiling or amount > policy.refund.hard_cap_usd:
-                raise RefundLimitExceededError(
-                    f"Refund of ${amount:.2f} exceeds auto-approval ceiling "
-                    f"of ${ceiling:.2f} for {customer.tier} tier",
-                    context={
-                        "amount_usd": amount,
-                        "ceiling_usd": ceiling,
-                        "tier": customer.tier,
-                    },
-                )
-
-            refund_id = await services.refunds.issue_refund(
-                order_id=args["order_id"],
-                amount_usd=amount,
-                reason=args["reason"],
-                approved_by="agent",
+        # Belt-and-suspenders: the PreToolUse hook also checks this, but
+        # tools never trust upstream — defense in depth.
+        if amount > ceiling or amount > policy.refund.hard_cap_usd:
+            raise RefundLimitExceededError(
+                f"Refund of ${amount:.2f} exceeds auto-approval ceiling "
+                f"of ${ceiling:.2f} for {customer.tier} tier",
+                context={
+                    "amount_usd": amount,
+                    "ceiling_usd": ceiling,
+                    "tier": customer.tier,
+                },
             )
-            return _ok({
-                "refund_id": refund_id,
-                "amount_usd": amount,
-                "status": "issued",
-            })
-        except SupportAgentError as e:
-            return _err(e)
 
-    # --- Knowledge base --------------------------------------------------- #
-    KB = {
-        "shipping": "Standard shipping is 3–5 business days. Express is 1–2.",
-        "returns": "Items can be returned within 30 days of delivery for a "
-                   "full refund. Items must be unused and in original packaging.",
-        "warranty": "All products carry a 1-year manufacturer warranty. "
-                    "Extended coverage available at checkout.",
-        "account": "Account changes (email, password) must be made at "
-                   "account.example.com — agents cannot make them on your behalf.",
-    }
+        refund_id = await services.refunds.issue_refund(
+            order_id=args["order_id"],
+            amount_usd=amount,
+            reason=args["reason"],
+            approved_by="agent",
+        )
+        return _ok({
+            "refund_id": refund_id,
+            "amount_usd": amount,
+            "status": "issued",
+        })
+    return issue_refund
 
+
+def _search_knowledge_base(query: str) -> list[dict[str, str]]:
+    """Search knowledge base by topic keyword or content words."""
+    q = query.lower()
+    hits = []
+    for topic, content in KNOWLEDGE_BASE.items():
+        if topic in q or any(word in content.lower() for word in q.split()):
+            hits.append({"topic": topic, "content": content})
+    return hits
+
+
+def _build_search_knowledge_base_tool():
+    """Knowledge base search tool builder."""
     @tool(
         "search_knowledge_base",
         "Search the support knowledge base for self-service answers about "
@@ -193,11 +221,13 @@ def build_support_mcp_server(services: ServiceRegistry, policy=DEFAULT_POLICY):
         {"query": str},
     )
     async def search_knowledge_base(args: dict[str, Any]) -> dict[str, Any]:
-        q = args["query"].lower()
-        hits = [{"topic": k, "content": v} for k, v in KB.items() if k in q or any(w in v.lower() for w in q.split())]
+        hits = _search_knowledge_base(args["query"])
         return _ok({"results": hits, "query": args["query"]})
+    return search_knowledge_base
 
-    # --- Escalation ------------------------------------------------------- #
+
+def _build_escalate_to_human_tool(services: ServiceRegistry):
+    """Escalate to human tool builder."""
     @tool(
         "escalate_to_human",
         "Hand the conversation off to a human agent. ALWAYS use this when: "
@@ -209,47 +239,56 @@ def build_support_mcp_server(services: ServiceRegistry, policy=DEFAULT_POLICY):
         "human can pick up without re-asking the customer.",
         {
             "ticket_id": str,
-            "reason": str,         # one of EscalationReason values
-            "summary": str,        # human-readable handoff notes
-            "priority": str,       # "low" | "normal" | "high" | "urgent"
+            "reason": str,
+            "summary": str,
+            "priority": str,
         },
     )
+    @_tool_error_handler
     async def escalate_to_human(args: dict[str, Any]) -> dict[str, Any]:
+        reason_raw = args.get("reason", "")
         try:
-            reason_raw = args.get("reason", "")
-            try:
-                reason = EscalationReason(reason_raw)
-            except ValueError:
-                reason = EscalationReason.LOW_CONFIDENCE  # default fallback
+            reason = EscalationReason(reason_raw)
+        except ValueError:
+            reason = EscalationReason.LOW_CONFIDENCE
 
-            await services.tickets.update_ticket(
-                args["ticket_id"],
-                {
-                    "status": "escalated",
-                    "escalation_reason": reason.value,
-                    "escalation_summary": args["summary"],
-                    "priority": args.get("priority", "normal"),
-                },
-            )
-            return _ok({
-                "ticket_id": args["ticket_id"],
-                "escalated": True,
-                "reason": reason.value,
-                "message": "Handed off to human agent. They will see the full conversation history.",
-            })
-        except SupportAgentError as e:
-            return _err(e)
+        await services.tickets.update_ticket(
+            args["ticket_id"],
+            {
+                "status": "escalated",
+                "escalation_reason": reason.value,
+                "escalation_summary": args["summary"],
+                "priority": args.get("priority", "normal"),
+            },
+        )
+        return _ok({
+            "ticket_id": args["ticket_id"],
+            "escalated": True,
+            "reason": reason.value,
+            "message": "Handed off to human agent. They will see the full conversation history.",
+        })
+    return escalate_to_human
 
+
+# --------------------------------------------------------------------------- #
+# Tool factory                                                                #
+# --------------------------------------------------------------------------- #
+
+def build_support_mcp_server(services: ServiceRegistry, policy=DEFAULT_POLICY):
+    """Construct the in-process MCP server with all support tools bound to
+    the given service registry. Returning a fresh server per agent run keeps
+    tests isolated — pass a registry built from fakes.
+    """
     return create_sdk_mcp_server(
         name="support-tools",
         version="1.0.0",
         tools=[
-            lookup_customer,
-            get_order,
-            list_customer_orders,
-            issue_refund,
-            search_knowledge_base,
-            escalate_to_human,
+            _build_lookup_customer_tool(services),
+            _build_get_order_tool(services),
+            _build_list_customer_orders_tool(services),
+            _build_issue_refund_tool(services, policy),
+            _build_search_knowledge_base_tool(),
+            _build_escalate_to_human_tool(services),
         ],
     )
 
