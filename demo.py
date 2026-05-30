@@ -105,4 +105,5 @@ async def main():
 
 
 if __name__ == "__main__":
+    # Run the main function in an asyncio event loop and exit with its return code
     sys.exit(asyncio.run(main()))
